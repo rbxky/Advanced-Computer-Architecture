@@ -1,157 +1,186 @@
-/********************************************************************  *
- * File         : reader.cpp
- * Author       : Soham J. Desai 
- * Date         : 2nd January 2014
- * Description  : Trace Redear and Analyzer for Lab 1 of ECE6100
- ********************************************************************/
+/********************************************************************  
+ * File         : sim.cpp
+ * Description  :  Pipeline for Lab2 ECE 6100
+ *********************************************************************/
 
 #include <iostream>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
-#include "trace.h"
+
+#include "pipeline.h"
+
+#define HEARTBEAT_CYCLES 10000
 
 
 /*********************************************************************
- * Globals and Statistics
- ********************************************************************/
-
-FILE     *tr_file;
-Trace_Rec tr_entry;
-
-uint64_t stat_num_inst = 0;
-uint64_t stat_num_cycle = 0;
-uint64_t stat_optype_dyn[NUM_OP_TYPE] = { 0 }; // dynamic count for each op type
-uint64_t stat_unique_pc = 0;  // number of unique PCs
-
-/*********************************************************************
- * Functions
- ********************************************************************/
+ * Global Scope Functions
+ *********************************************************************/
 
 void die_message(const char *msg) {
     printf("Error! %s. Exiting...\n", msg);
     exit(1);
 }
-void print_stats();
-void analyze_trace_record(Trace_Rec *t);    
 
+void die_usage() {
+    printf("Usage : sim [options] <trace_file> \n\n");
+    printf("Trace driven pipeline simulator\n");
+    printf("Options\n");
+    printf("   -pipewidth   <num>    Set width of pipeline to <num> (Default: 1)\n");
+    printf("   -enablememfwd         Enable forwarding from MEM stage (Default: off)\n");
+    printf("   -enableexefwd         Enable forwarding from EXE stage (Default: off)\n");
+    printf("   -bpredpolicy <num>    Set branch predictor  [0:Perf 1:Taken 2:Gshare]\n");
+}
+
+void check_heartbeat(void);
+
+void print_stats(void);
+
+
+/*********************************************************************
+ * Params and Globals
+ *********************************************************************/
+uint32_t  PIPE_WIDTH=1;
+uint32_t  ENABLE_MEM_FWD=0;
+uint32_t  ENABLE_EXE_FWD=0;
+uint32_t  BPRED_POLICY=0; // 0:Perf 1:AlwaysTaken 2:Gshare
+
+Pipeline *pipeline;
 /*********************************************************************
  * Main
  *********************************************************************/
 
-int main(int argc, char *argv[]){
-  char tr_filename[1024];
-  char cmd_string[256];
-  
-  if(argc == 1) {
-    die_message("Must Provide a Trace File"); 
-  }
-  
-  strcpy(tr_filename, argv[1]);
-  
+int main(int argc, char *argv[])
+{
+  int ii;
+
+    FILE *tr_file;
+    char tr_filename[1024];
+    char cmd_string[256];
+    
+    if(argc < 1) {
+        die_message("Must Provide a Trace File"); 
+    }
+
+    //--------------------------------------------------------------------
+    // -- Get params from command line 
+    //--------------------------------------------------------------------    
+    for ( ii = 1; ii < argc; ii++) {
+	if (argv[ii][0] == '-') {	    
+	    if (!strcmp(argv[ii], "-h") || !strcmp(argv[ii], "-help")) {
+		die_usage();
+	    }	    
+
+
+	    else if (!strcmp(argv[ii], "-pipewidth")) {
+		if (ii < argc - 1) {		  
+		    PIPE_WIDTH = atoi(argv[ii+1]);
+		    ii += 1;
+		}
+	    }
+
+	    else if (!strcmp(argv[ii], "-bpredpolicy")) {
+		if (ii < argc - 1) {		  
+		    BPRED_POLICY = atoi(argv[ii+1]);
+		    ii += 1;
+		}
+	    }
+
+	    else if (!strcmp(argv[ii], "-enablememfwd")) {
+	      ENABLE_MEM_FWD = 1;
+	    }
+
+	    else if (!strcmp(argv[ii], "-enableexefwd")) {
+	      ENABLE_EXE_FWD = 1;
+	    }
+	}
+	else {
+	  strcpy(tr_filename, argv[ii]);
+	}
+    }
+
+    
   // ------- Open Trace File -------------------------------------------
-  
-  sprintf(cmd_string,"gunzip -c %s", tr_filename);
-  if ((tr_file = popen(cmd_string, "r")) == NULL){
-    printf("Command string is %s\n", cmd_string);
-    die_message("Unable to open the trace file with gzip option \n")  ;
-  } else {
-    printf("Opened file with command: %s \n", cmd_string);
-  }
-  
-  // ------- Read From Trace File --------------------------------------
-  uint8_t bytes_read = 0;  
-  
-  while(!feof(tr_file)) {
-    bytes_read = fread(&tr_entry, 1, sizeof(Trace_Rec), tr_file);
-
-    if( bytes_read < sizeof(Trace_Rec)) {
-      break; 
+    sprintf(cmd_string,"gunzip -c %s", tr_filename);
+    if ((tr_file = popen(cmd_string, "r")) == NULL){
+        printf("Command string is %s\n", cmd_string);
+        die_message("Unable to open the trace file with gzip option \n")  ;
+    } else {
+        printf("Opened file with command: %s \n", cmd_string);
     }
-    
-    stat_num_inst++;
-    analyze_trace_record(&tr_entry);
-  }
-  
-  // ------- Print Statistics ------------------------------------------
-  print_stats(); 
-  fclose(tr_file);
-  return 0;	
+     
+  // ------- Pipeline Initialization & Execution ----------------------
 
+     pipeline = pipe_init(tr_file); 
+    
+    while(!pipeline->halt) {
+      pipe_cycle(pipeline);
+      check_heartbeat();
+    }
+
+  // ------- Print Statistics------------------------------------------
+    print_stats();
+    fclose(tr_file);
+    return 0;
 }
 
 /*********************************************************************
- * Print Statistics --------- DO NOT MODIFY THIS FUNCTION ------------
+ * Print Statistics 
  *********************************************************************/
+  
+void print_stats(void) {
+    char header[256];
+    sprintf(header, "LAB2");
+    uint64_t stat_num_inst       = pipeline->stat_retired_inst;
+    uint64_t stat_num_cycle      = pipeline->stat_num_cycle;
+    double cpi = (double)(stat_num_cycle)/(double)(stat_num_inst);
 
-void print_stats(){
-  char header[256];
-  sprintf(header, "LAB1");
+    printf("\n\n");
   
-  if(stat_num_inst==0){
-    stat_num_inst=1; // To avoid divide by zero errors
-  }
-  double cpi = (double)(stat_num_cycle)/(double)(stat_num_inst);
-  
-  printf("\n%s_NUM_INST           \t : %10lu", header, stat_num_inst)  ;
-  printf("\n%s_NUM_CYCLES         \t : %10lu", header, stat_num_cycle  );
-  
-  printf("\n%s_CPI                \t : %6.3f",  header, cpi);
-  printf("\n%s_UNIQUE_PC          \t : %10lu", header, stat_unique_pc  );
-  
-  printf("\n");
-  
-  printf("\n%s_NUM_ALU_OP         \t : %10lu", header, stat_optype_dyn[OP_ALU]);
-  printf("\n%s_NUM_LD_OP          \t : %10lu", header, stat_optype_dyn[OP_LD]);
-  printf("\n%s_NUM_ST_OP          \t : %10lu", header, stat_optype_dyn[OP_ST]);
-  printf("\n%s_NUM_CBR_OP         \t : %10lu", header, stat_optype_dyn[OP_CBR]);
-  printf("\n%s_NUM_OTHER_OP       \t : %10lu", header, stat_optype_dyn[OP_OTHER]);
-  
-  printf("\n");
-  
-  printf("\n%s_PERC_ALU_OP        \t : %6.3f", header, 100.0*(double)(  stat_optype_dyn[OP_ALU])/(double)(stat_num_inst));
-  printf("\n%s_PERC_LD_OP         \t : %6.3f", header, 100.0*(double)(  stat_optype_dyn[OP_LD])/(double)(stat_num_inst));
-  printf("\n%s_PERC_ST_OP         \t : %6.3f", header, 100.0*(double)(  stat_optype_dyn[OP_ST])/(double)(stat_num_inst));
-  printf("\n%s_PERC_CBR_OP        \t : %6.3f", header, 100.0*(double)(  stat_optype_dyn[OP_CBR])/(double)(stat_num_inst));
-  printf("\n%s_PERC_OTHER_OP      \t : %6.3f", header, 100.0*(double)(  stat_optype_dyn[OP_OTHER])/(double)(stat_num_inst));
-  
-  printf("\n\n");
+    printf("\n%s_NUM_INST           \t : %10u" , header, (uint32_t)stat_num_inst)  ;
+    printf("\n%s_NUM_CYCLES         \t : %10u" , header, (uint32_t)stat_num_cycle);
+    printf("\n%s_CPI                \t : %10.3f" , header, cpi);
+
+    if(BPRED_POLICY){
+    printf("\n%s_BPRED_BRANCHES     \t : %10u" , header, (uint32_t)pipeline->b_pred->stat_num_branches)  ;
+    printf("\n%s_BPRED_MISPRED      \t : %10u" , header, (uint32_t)pipeline->b_pred->stat_num_mispred)  ;
+    printf("\n%s_MISPRED_RATE       \t : %10.3f" , header, 100.0*(double)(pipeline->b_pred->stat_num_mispred)/(double)(pipeline->b_pred->stat_num_branches));
+    }
+    
+    printf("\n\n");
 }
 
 /*********************************************************************
- * ------------- DO NOT MODIFY THE CODE ABOVE THIS LINE -------------*
+ * Print Heartbeat 
  *********************************************************************/
-int i=0,j=0;
-uint64_t rah[10000];  
-/*********************************************************************
- * Trace Analysis (Students need to write this function)
- *********************************************************************/
-void analyze_trace_record(Trace_Rec *t){
-    
-	assert(t);
-  if (t->opcode==0)
-  stat_optype_dyn[0]++;
-  else if (t->opcode==1)
-  stat_optype_dyn[1]++;
-  else if (t->opcode==2)
-  stat_optype_dyn[2]++;
-  else if (t->opcode==3)
-  stat_optype_dyn[3]++;
-  else if (t->opcode==4)
-  stat_optype_dyn[4]++;
-  stat_num_cycle=(stat_optype_dyn[0]+(stat_optype_dyn[1]*2)+(stat_optype_dyn[2]*2)+(stat_optype_dyn[3]*3)+stat_optype_dyn[4]);
+uint64_t last_hbeat_cycle;
+uint64_t last_hbeat_line;
+uint64_t last_hbeat_inst;
 
-  rah[j]=t->inst_addr;
-  for(i=0; i<=j; i++)
-  {
-    if(t->inst_addr==rah[i])
-    break;
-    else
-    {
-    rah[j+1]=t->inst_addr;
-    j++;
-    stat_unique_pc++;
-    }
+void check_heartbeat(void){
+
+  if(pipeline->stat_num_cycle - last_hbeat_cycle < HEARTBEAT_CYCLES){
+    return;
   }
+
+  printf(".");
+  fflush(stdout);
+
+  // check for deadlock
+  if(last_hbeat_inst == pipeline->stat_retired_inst){
+    printf("No committed instructions in %u cycles.\n", HEARTBEAT_CYCLES);
+    die_message("Pipeline is Deadlocked. Dying\n");
+  }
+
+  last_hbeat_cycle=pipeline->stat_num_cycle;
+  last_hbeat_inst = pipeline->stat_retired_inst;
+
+  // print a newline and CPI every so often
+  if(pipeline->stat_num_cycle - last_hbeat_line >= 50*HEARTBEAT_CYCLES){
+    printf("\n(Inst:%8u\tCycle:%8u\tCPI:%6.3f)\t", (uint32_t)pipeline->stat_retired_inst,
+	   (uint32_t)pipeline->stat_num_cycle, (double)(pipeline->stat_num_cycle)/(double)(pipeline->stat_retired_inst+1));
+    last_hbeat_line=pipeline->stat_num_cycle;
+  }
+
 }
