@@ -6,4 +6,4 @@ g++ -c rat.cpp -o rat.o
 g++ -c rest.cpp -o rest.o
 g++ -c rob.cpp -o rob.o
 
-Since you have no way of debugging these files just yet, tou will be graded for Part A for simply submitting the cpp files.  
+Since you have no way of debugging these files just yet, you will be graded for Part A for simply submitting the cpp files.  
